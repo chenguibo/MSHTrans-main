@@ -1,0 +1,3 @@
+uptime,dataset_id,strategy,exp_id,model_id,f1_adjusted,pc_adjusted,rc_adjusted,acc_adjusted,f1,pc,rc,acc,delay,batch_size,d_model,lr,window_size,update_rate,k,hyper_num,pool_size_list
+20251207_105825,SWaT,best_adjusted,SWaT,MSHTran,0.9562844066506373,0.9699988700139365,0.9429523443364274,0.9895336483537001,,,,,0.0,512,64,0.001,100,0.3,5,"[50, 30, 20]","[2, 2]"
+20251207_105825,SWaT,best,SWaT,MSHTran,,,,,0.7647989452867502,0.9562350614027858,0.637227439995606,0.9524179961681907,155.88888311522655,512,64,0.001,100,0.3,5,"[50, 30, 20]","[2, 2]"

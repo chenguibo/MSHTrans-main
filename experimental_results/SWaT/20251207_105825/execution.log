@@ -1,0 +1,64 @@
+2025-12-07 10:58:25,995 P2992856 INFO Using device: cuda: 0
+2025-12-07 10:58:25,995 P2992856 INFO Loading data from ./datasets/SWaT.pkl
+2025-12-07 10:58:26,801 P2992856 INFO Normalizing data with minmax
+2025-12-07 10:58:27,698 P2992856 INFO Fitting dataset: SWaT
+2025-12-07 10:58:27,698 P2992856 INFO Generating sliding windows (size 100).
+2025-12-07 10:58:34,195 P2992856 INFO Windows for test #: (449918, 100, 51)
+2025-12-07 10:58:34,334 P2992856 INFO Training epoch: 1
+2025-12-07 10:59:27,110 P2992856 INFO Epoch: 1 finished, loss is 2669.4314
+2025-12-07 10:59:27,111 P2992856 INFO Training epoch: 2
+2025-12-07 11:00:23,398 P2992856 INFO Epoch: 2 finished, loss is 2022.3041
+2025-12-07 11:00:23,398 P2992856 INFO Training epoch: 3
+2025-12-07 11:01:40,935 P2992856 INFO Epoch: 3 finished, loss is 1905.2552
+2025-12-07 11:01:40,935 P2992856 INFO Training epoch: 4
+2025-12-07 11:03:01,949 P2992856 INFO Epoch: 4 finished, loss is 1837.0593
+2025-12-07 11:03:01,949 P2992856 INFO Training epoch: 5
+2025-12-07 11:04:23,446 P2992856 INFO Epoch: 5 finished, loss is 1811.6891
+2025-12-07 11:04:23,446 P2992856 INFO Training epoch: 6
+2025-12-07 11:05:44,704 P2992856 INFO Epoch: 6 finished, loss is 1792.0583
+2025-12-07 11:05:44,704 P2992856 INFO Training epoch: 7
+2025-12-07 11:07:05,883 P2992856 INFO Epoch: 7 finished, loss is 1781.0471
+2025-12-07 11:07:05,883 P2992856 INFO Training epoch: 8
+2025-12-07 11:08:27,010 P2992856 INFO Epoch: 8 finished, loss is 1759.6981
+2025-12-07 11:08:27,010 P2992856 INFO Training epoch: 9
+2025-12-07 11:09:48,419 P2992856 INFO Epoch: 9 finished, loss is 1735.5699
+2025-12-07 11:09:48,419 P2992856 INFO Training epoch: 10
+2025-12-07 11:11:09,693 P2992856 INFO Epoch: 10 finished, loss is 1718.7300
+2025-12-07 11:11:09,693 P2992856 INFO Training epoch: 11
+2025-12-07 11:12:30,836 P2992856 INFO Epoch: 11 finished, loss is 1691.3417
+2025-12-07 11:12:30,837 P2992856 INFO Training epoch: 12
+2025-12-07 11:13:51,941 P2992856 INFO Epoch: 12 finished, loss is 1659.2279
+2025-12-07 11:13:51,941 P2992856 INFO Training epoch: 13
+2025-12-07 11:15:13,269 P2992856 INFO Epoch: 13 finished, loss is 1655.3475
+2025-12-07 11:15:13,269 P2992856 INFO Training epoch: 14
+2025-12-07 11:16:34,402 P2992856 INFO Epoch: 14 finished, loss is 1652.2277
+2025-12-07 11:16:34,402 P2992856 INFO Training epoch: 15
+2025-12-07 11:17:55,687 P2992856 INFO Epoch: 15 finished, loss is 1642.8420
+2025-12-07 11:17:55,687 P2992856 INFO Training epoch: 16
+2025-12-07 11:19:16,905 P2992856 INFO Epoch: 16 finished, loss is 1637.5273
+2025-12-07 11:19:16,905 P2992856 INFO Training epoch: 17
+2025-12-07 11:20:38,205 P2992856 INFO Epoch: 17 finished, loss is 1620.0592
+2025-12-07 11:20:38,205 P2992856 INFO Training epoch: 18
+2025-12-07 11:21:59,502 P2992856 INFO Epoch: 18 finished, loss is 1616.0864
+2025-12-07 11:21:59,502 P2992856 INFO Training epoch: 19
+2025-12-07 11:23:20,890 P2992856 INFO Epoch: 19 finished, loss is 1607.2325
+2025-12-07 11:23:20,890 P2992856 INFO Training epoch: 20
+2025-12-07 11:24:42,198 P2992856 INFO Epoch: 20 finished, loss is 1570.2715
+2025-12-07 11:25:29,236 P2992856 INFO Saving hdf5 to ./experimental_results/SWaT/20251207_105825/SWaT/score_SWaT.hdf5
+2025-12-07 11:25:29,300 P2992856 INFO Saving results for SWaT done.
+2025-12-07 11:25:29,312 P2992856 INFO Saving model for SWaT done at ./experimental_results/SWaT/20251207_105825/SWaT.
+2025-12-07 11:25:29,312 P2992856 INFO Loading hdf5 from ./experimental_results/SWaT/20251207_105825/SWaT/score_SWaT.hdf5
+2025-12-07 11:25:29,389 P2992856 INFO Searching for the best threshod..
+2025-12-07 11:26:23,566 P2992856 INFO Pred pos 53098/449918, Label pos 54621/449918
+2025-12-07 11:26:25,917 P2992856 INFO Searching for the best threshod..
+2025-12-07 11:27:17,641 P2992856 INFO Pred pos 36399/449918, Label pos 54621/449918
+2025-12-07 11:27:19,867 P2992856 INFO {
+    "best": "{'f1': 0.7647989452867502, 'pc': 0.9562350614027858, 'rc': 0.637227439995606, 'acc': 0.9524179961681907, 'delay': 155.88888311522655, 'length': 449918}",
+    "best_adjusted": "{'f1_adjusted': 0.9562844066506373, 'pc_adjusted': 0.9699988700139365, 'rc_adjusted': 0.9429523443364274, 'acc_adjusted': 0.9895336483537001, 'delay': 0.0, 'length': 449918}",
+    "dataset_id": "SWaT",
+    "exp_id": "SWaT",
+    "model_id": "MSHTran",
+    "uptime": "20251207_105825"
+}
+2025-12-07 11:27:19,867 P2992856 INFO Evaluated 1 entities.
+2025-12-07 11:27:19,966 P2992856 INFO Appended exp results to ./experimental_results/SWaT/benchmark_results/SWaT/bench_results_SWaT_common.csv.
