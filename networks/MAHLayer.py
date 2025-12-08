@@ -33,7 +33,7 @@ class Multi_Adaptive_Hypergraph(nn.Module):
                 self.embedding_node.append(nn.Embedding(int(layer_size),self.dim).to(device))
 
         self.dropout = nn.Dropout(p=0.1)
-        self.adjs = self.init_H_indicies()
+        self.adjs = self.init_H_indicies() # incidence matrix list
         self.update_rate = args["update_rate"]
         
         self.node_num = []
@@ -123,10 +123,11 @@ class Multi_Adaptive_Hypergraph(nn.Module):
                 hyperen = edge_embeddings[i]
                 nodeec = node_embeddings[i]
 
+                # Eq.5
                 a = torch.mm(nodeec, hyperen.transpose(1, 0))
                 cur_adj = F.softmax(F.relu(self.alpha * a))
                 
-    
+                # Eq.7
                 mask = torch.zeros(nodeec.size(0), hyperen.size(0)).to(self.device)
                 mask.fill_(float('0'))
 
@@ -134,6 +135,7 @@ class Multi_Adaptive_Hypergraph(nn.Module):
                 mask.scatter_(1, t1, s1.fill_(1))
                 cur_adj = cur_adj * mask
 
+                # H(𝑠) = (1−𝜏)H(𝑠) +𝜏˜H(𝑠)
                 adj = self.update_rate * cur_adj + (1 - self.update_rate) * self.adjs[i]
                 adj = self.minmax_norm(adj)
                 self.adjs[i] = adj
