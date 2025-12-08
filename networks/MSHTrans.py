@@ -73,10 +73,9 @@ class MSHTrans(nn.Module):
         return window_x_list
         
     def encoder(self, x, hyper_graph_indicies):
-        window_ori_x = self.extract_downsample(x)
-        
+        # Multi-scale Window Generator
+        window_ori_x = self.extract_downsample(x)    
         seq_enc = self.conv_layers(x) 
-        
         for i in range(self.hyper_num):
             seq_enc[i] = torch.concat([seq_enc[i], window_ori_x[i]], dim=-1)
             seq_enc[i] = self.pos_encoder(seq_enc[i])
