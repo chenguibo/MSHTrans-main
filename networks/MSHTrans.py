@@ -73,84 +73,81 @@ class MSHTrans(nn.Module):
         return window_x_list
         
     def encoder(self, x, hyper_graph_indicies):
+        # x: (batch_size, seq_len, n_feats)
+
         # Multi-scale Window Generator
         window_ori_x = self.extract_downsample(x)    
         seq_enc = self.conv_layers(x) 
         for i in range(self.hyper_num):
             seq_enc[i] = torch.concat([seq_enc[i], window_ori_x[i]], dim=-1)
             seq_enc[i] = self.pos_encoder(seq_enc[i])
+        #  seq_enc[i]: (batch_size, seq_len_i, n_feats*2)
 
         st_fusion_list = []
         for i in range(self.hyper_num):
-            hyperedge_indices = torch.tensor(hyper_graph_indicies[i]).to(self.device) 
-            
+            hyperedge_indices = torch.tensor(hyper_graph_indicies[i]).to(self.device)    
             node_value = seq_enc[i].permute(0,2,1).to(self.device)
-
             edge_indices, node_indices = hyperedge_indices[1], hyperedge_indices[0]
-
             num_edges = edge_indices.max().item() + 1
             num_nodes = node_value.size(2)  
 
+            # Intra-scale Hypergraph Attention
             indices = torch.stack([edge_indices, node_indices])  
             values = torch.ones(edge_indices.size(0), device=node_value.device)
             adj_matrix = torch.sparse_coo_tensor(indices, values, (num_edges, num_nodes), device=node_value.device)
-
-   
             node_value = node_value.permute(2, 0, 1).contiguous()
-
             edge_features = torch.sparse.mm(adj_matrix, node_value.view(num_nodes, -1)).view(num_edges, node_value.size(1), node_value.size(2))
             
+            # Multi-head Hypergraph Convolution
             multi_head_hyconv = self.hyconv_list[i]
             output_list = []
             for j in range(self.hyper_head):
                 output = multi_head_hyconv[j](seq_enc[i], hyperedge_indices, edge_features).permute(1, 0, 2)
                 output_list.append(output)
-            multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)
-            
+            multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)     
             multi_head_node_emb = multi_head_node_emb + seq_enc[i]
-            
+
+            # Series Decomposition  
             seasonality, trend = self.series_decomposition[i](multi_head_node_emb)
             
+            # Seasonality and Trend Fusion
             st_fusion = self.season_trend_fusion[i](seq_enc[i], seasonality, trend) 
             st_fusion_list.append(st_fusion)
+        # Multi-scale Fusion
         fused_logits = self.msfusion(st_fusion_list)
         return fused_logits
 
     def decoder(self, x, fused_logits, hyperedge_index):
-        edge_features = {}
-        
+        edge_features = {}   
         node_value = x.permute(0,2,1)
         hyperedge_index = hyperedge_index.to(self.device)
-
         edge_indices, node_indices = hyperedge_index[1], hyperedge_index[0]
-
         num_edges = edge_indices.max().item() + 1
         num_nodes = node_value.size(2) 
-
         indices = torch.stack([edge_indices, node_indices])  
         values = torch.ones(edge_indices.size(0), device=node_value.device)
         adj_matrix = torch.sparse_coo_tensor(indices, values, (num_edges, num_nodes), device=node_value.device)
-
         node_value = node_value.permute(2, 0, 1).contiguous()
-
         edge_features = torch.sparse.mm(adj_matrix, node_value.view(num_nodes, -1)).view(num_edges, node_value.size(1), node_value.size(2))
         
+        # Series Decomposition 1
         z_sea_1, z_trend_1 = self.series_decomposition_d1(x) 
-        
         input_hyconv = torch.concat([z_sea_1, fused_logits], dim=-1)
         input_hyconv = self.pos_encoder(input_hyconv)
         
+        # Multi-head Hypergraph Convolution
         output_list = []
         for i in range(self.hyper_head):
             output = self.hyconv_d1[i](input_hyconv, hyperedge_index, edge_features).permute(1, 0, 2) 
             output_list.append(output)
-        
         multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)
-        z_sea_2, z_trend_2 = self.series_decomposition_d2(multi_head_node_emb)
-        
+
+        # Series Decomposition 2
+        z_sea_2, z_trend_2 = self.series_decomposition_d2(multi_head_node_emb)    
         z_trend_3 = z_trend_1 + z_trend_2
-        results = self.season_trend_fusion_d1(x, z_sea_2, z_trend_3)
-        
+
+        # Seasonality and Trend Fusion
+        results = self.season_trend_fusion_d1(x, z_sea_2, z_trend_3)    
         results = self.sigmoid(results)
   
         return results
