@@ -85,7 +85,7 @@ class MSHTrans(nn.Module):
 
         st_fusion_list = []
         for i in range(self.hyper_num):
-            # input: seq_enc[i] (batch_size, seq_len_i, n_feats*2) 验证一下
+            # input: seq_enc[i] (batch_size, seq_len_i, n_feats*2)
 
             hyperedge_indices = torch.tensor(hyper_graph_indicies[i]).to(self.device)    
             node_value = seq_enc[i].permute(0,2,1).to(self.device)
@@ -109,7 +109,7 @@ class MSHTrans(nn.Module):
             multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)     
             multi_head_node_emb = multi_head_node_emb + seq_enc[i]
 
-            # output: multi_head_node_emb 形状验证一下
+            # output: multi_head_node_emb (batch_size, seq_len_i, n_feats*2)
 
             # Series Decomposition  
             seasonality, trend = self.series_decomposition[i](multi_head_node_emb)
@@ -139,7 +139,7 @@ class MSHTrans(nn.Module):
         # Series Decomposition 1
         z_sea_1, z_trend_1 = self.series_decomposition_d1(x) 
 
-        # input/output: 形状验证一下
+        # input/output: z_sea_1、z_trend_1 (batch_size, seq_len, n_feats)
 
         # Multi-head Hypergraph Convolution
         input_hyconv = torch.concat([z_sea_1, fused_logits], dim=-1)
@@ -150,7 +150,7 @@ class MSHTrans(nn.Module):
             output_list.append(output)
         multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)
 
-        # output: multi_head_node_emb 形状验证一下
+        # output: multi_head_node_emb (batch_size, seq_len, n_feats)
 
         # Series Decomposition 2
         z_sea_2, z_trend_2 = self.series_decomposition_d2(multi_head_node_emb)    
