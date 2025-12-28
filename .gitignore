@@ -1,4 +1,6 @@
 datasets/
 experimental_results/
+network/__pycache__/
+scripts/
 .vscode/
 .gitignore/
