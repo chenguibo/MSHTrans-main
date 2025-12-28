@@ -82,41 +82,90 @@ class Bottleneck_Construct(nn.Module):
             all_inputs.append(temp_input.permute(0, 2, 1))
         return all_inputs
     
+# class SeriesDecomposition(nn.Module):
+#     def __init__(self, seq_len, d_model):
+#         super(SeriesDecomposition, self).__init__()
+#         self.start_linear= nn.Linear(in_features = d_model, out_features = d_model)
+#         self.seasonality_model = FourierLayer(pred_len=0, k=3)
+#         self.trend_model = series_decomp_multi(kernel_size=[4, 8, 12])
+    
+#     def forward(self, time_series): 
+#         _, trend = self.trend_model(time_series)
+#         seasonality, _, _ = self.seasonality_model(time_series)
+#         x_trans = time_series + seasonality + trend
+        
+#         return seasonality, trend
+
+# class SeasonTrendFusion(nn.Module):
+#     def __init__(self, d_model, out_d):
+#         super(SeasonTrendFusion, self).__init__()
+#         self.d_model = d_model
+#         self.out_d = out_d
+#         self.weight_evo = nn.Parameter(torch.randn(self.d_model, self.d_model))
+        
+#         self.d_ff = 64
+        
+#         self.feedforward = nn.Sequential(nn.Linear(self.d_model * 3, self.d_ff, bias=True),
+#                                 nn.GELU(),
+#                                 nn.Dropout(0.1),
+#                                 nn.Linear(self.d_ff, self.out_d, bias=True))
+    
+#     def forward(self, x, x_sea, x_trend):
+#         x_sea_evo = x_sea @ self.weight_evo
+#         x_trans = torch.concat([x, x_sea_evo, x_trend], dim=-1)
+        
+#         x_trans = self.feedforward(x_trans)
+        
+#         return x_trans
+
 class SeriesDecomposition(nn.Module):
     def __init__(self, seq_len, d_model):
         super(SeriesDecomposition, self).__init__()
-        self.start_linear= nn.Linear(in_features = d_model, out_features = d_model)
-        self.seasonality_model = FourierLayer(pred_len=0, k=3)
-        self.trend_model = series_decomp_multi(kernel_size=[4, 8, 12])
-    
+        # 1. 放弃复杂的 kernel，改用简单的标准化移动平均
+        self.trend_model = series_decomp_multi(kernel_size=[8, 16, 24]) 
+        # 2. 引入平滑机制：只有在残差足够大时才认为存在周期项 (借鉴 DLinear)
+        self.norm = nn.LayerNorm(d_model)
+
     def forward(self, time_series): 
+        # a) 提取趋势项 (Trend)
         _, trend = self.trend_model(time_series)
-        seasonality, _, _ = self.seasonality_model(time_series)
-        x_trans = time_series + seasonality + trend
+        # b) 剥离出季节项/残差 (Seasonality/Residual)
+        # 注意：这里先做减法，再做归一化，能显著对齐特征量级
+        res = self.norm(time_series - trend)
         
-        return seasonality, trend
+        return res, trend
 
 class SeasonTrendFusion(nn.Module):
     def __init__(self, d_model, out_d):
         super(SeasonTrendFusion, self).__init__()
-        self.d_model = d_model
-        self.out_d = out_d
-        self.weight_evo = nn.Parameter(torch.randn(self.d_model, self.d_model))
+        # 1. 使用三个可学习的尺度标量（Scalar Weights）
+        # 让模型自己学：如果分解没用，权重会自动趋向 0
+        self.x_weight = nn.Parameter(torch.ones(1) * 0.33)
+        self.sea_weight = nn.Parameter(torch.ones(1) * 0.33)
+        self.trend_weight = nn.Parameter(torch.ones(1) * 0.33)
         
-        self.d_ff = 64
+        self.norm = nn.LayerNorm(d_model)
         
-        self.feedforward = nn.Sequential(nn.Linear(self.d_model * 3, self.d_ff, bias=True),
-                                nn.GELU(),
-                                nn.Dropout(0.1),
-                                nn.Linear(self.d_ff, self.out_d, bias=True))
-    
+        # 2. 【核心点】彻底扩大 feedforward 宽度
+        # 不要再写 d_ff=64 了，要随着 d_model 的增大而增大
+        self.d_ff = d_model * 2 
+        self.feedforward = nn.Sequential(
+            nn.Linear(d_model, self.d_ff),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.d_ff, out_d) # 直接从宽维度映射到输出
+        )
+
     def forward(self, x, x_sea, x_trend):
-        x_sea_evo = x_sea @ self.weight_evo
-        x_trans = torch.concat([x, x_sea_evo, x_trend], dim=-1)
+        # 1. 通道级权重调节（线性相加是最稳健的融合方案，不会掉点）
+        # 这里加上了三者的加权组合
+        fused = self.x_weight * x + self.sea_weight * x_sea + self.trend_weight * x_trend
         
-        x_trans = self.feedforward(x_trans)
+        # 2. 残差校准：在融合后再加一层归一化
+        fused = self.norm(fused)
         
-        return x_trans
+        # 3. 输出映射
+        return self.feedforward(fused)
     
 # class MSFusion(nn.Module):
 #     def __init__(self, d_model, kernel_size, d_inner, seq_length):
