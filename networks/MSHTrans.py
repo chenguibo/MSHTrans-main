@@ -9,6 +9,7 @@ from torch.nn import Linear
 from networks.MAHLayer import Multi_Adaptive_Hypergraph
 from networks.Layers import Bottleneck_Construct, SeriesDecomposition, SeasonTrendFusion, MSFusion, PositionalEncoding
 from networks.HyperGraphConv import HypergraphConv
+from networks.STAR import STAR
 
 class MSHTrans(nn.Module):
     def __init__(self, args, device):
@@ -38,6 +39,17 @@ class MSHTrans(nn.Module):
                 self.hyconv.append(HypergraphConv(self.n_feats * 2, self.n_feats * 2))
             self.hyconv_list.append(self.hyconv)
             
+        # STAR modules per scale (predefined and registered)
+        self.star_list = nn.ModuleList()
+        for i in range(self.hyper_num):
+            L_i = self.seq_length[i]
+            D_i = self.n_feats * 2
+            self.star_list.append(STAR(d_series=L_i, d_core=D_i))
+        
+        # Separate STAR for decoder to avoid sharing encoder parameters
+        self.star_decoder = STAR(d_series=self.seq_length[0], d_core=self.n_feats * 2)
+        self.decoder_proj = nn.Linear(self.n_feats * 2, self.n_feats)
+
         self.series_decomposition = nn.ModuleList()
         self.season_trend_fusion = nn.ModuleList()
         for i in range(self.hyper_num):
@@ -59,8 +71,7 @@ class MSHTrans(nn.Module):
         
         
         self.optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-5)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 5, 0.9)
-        
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 5, 0.9)    
     
     
     def extract_downsample(self, x):
@@ -73,7 +84,7 @@ class MSHTrans(nn.Module):
         return window_x_list
         
     def encoder(self, x, hyper_graph_indicies):
-        # x: (batch_size, seq_len, n_feats)
+        # x: (B, L, D)
 
         # Multi-scale Window Generator
         window_ori_x = self.extract_downsample(x)    
@@ -81,35 +92,41 @@ class MSHTrans(nn.Module):
         for i in range(self.hyper_num):
             seq_enc[i] = torch.concat([seq_enc[i], window_ori_x[i]], dim=-1)
             seq_enc[i] = self.pos_encoder(seq_enc[i])
-        #  seq_enc[i]: (batch_size, seq_len_i, n_feats*2)
+        #  seq_enc[i]: (B, L_i, D*2)
 
         st_fusion_list = []
         for i in range(self.hyper_num):
+            # region 【编码器超图模块注释】
             # input: seq_enc[i] (batch_size, seq_len_i, n_feats*2)
 
-            hyperedge_indices = torch.tensor(hyper_graph_indicies[i]).to(self.device)    
-            node_value = seq_enc[i].permute(0,2,1).to(self.device)
-            edge_indices, node_indices = hyperedge_indices[1], hyperedge_indices[0]
-            num_edges = edge_indices.max().item() + 1
-            num_nodes = node_value.size(2)  
+            # hyperedge_indices = torch.tensor(hyper_graph_indicies[i]).to(self.device)    
+            # node_value = seq_enc[i].permute(0,2,1).to(self.device)
+            # edge_indices, node_indices = hyperedge_indices[1], hyperedge_indices[0]
+            # num_edges = edge_indices.max().item() + 1
+            # num_nodes = node_value.size(2)  
 
-            # Intra-scale Hypergraph Attention
-            indices = torch.stack([edge_indices, node_indices])  
-            values = torch.ones(edge_indices.size(0), device=node_value.device)
-            adj_matrix = torch.sparse_coo_tensor(indices, values, (num_edges, num_nodes), device=node_value.device)
-            node_value = node_value.permute(2, 0, 1).contiguous()
-            edge_features = torch.sparse.mm(adj_matrix, node_value.view(num_nodes, -1)).view(num_edges, node_value.size(1), node_value.size(2))
+            # # Intra-scale Hypergraph Attention
+            # indices = torch.stack([edge_indices, node_indices])  
+            # values = torch.ones(edge_indices.size(0), device=node_value.device)
+            # adj_matrix = torch.sparse_coo_tensor(indices, values, (num_edges, num_nodes), device=node_value.device)
+            # node_value = node_value.permute(2, 0, 1).contiguous()
+            # edge_features = torch.sparse.mm(adj_matrix, node_value.view(num_nodes, -1)).view(num_edges, node_value.size(1), node_value.size(2))
             
-            # Multi-head Hypergraph Convolution
-            multi_head_hyconv = self.hyconv_list[i]
-            output_list = []
-            for j in range(self.hyper_head):
-                output = multi_head_hyconv[j](seq_enc[i], hyperedge_indices, edge_features).permute(1, 0, 2)
-                output_list.append(output)
-            multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)     
-            multi_head_node_emb = multi_head_node_emb + seq_enc[i]
+            # # Multi-head Hypergraph Convolution
+            # multi_head_hyconv = self.hyconv_list[i]
+            # output_list = []
+            # for j in range(self.hyper_head):
+            #     output = multi_head_hyconv[j](seq_enc[i], hyperedge_indices, edge_features).permute(1, 0, 2)
+            #     output_list.append(output)
+            # multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)     
+            # multi_head_node_emb = multi_head_node_emb + seq_enc[i]
 
             # output: multi_head_node_emb (batch_size, seq_len_i, n_feats*2)
+            # endregion
+
+            # STAR (use pre-created module; STAR expects input shape (B, D, L))
+            # seq_enc[i]: (B, L, D) -> permute to (B, D, L)
+            multi_head_node_emb = self.star_list[i](seq_enc[i].permute(0, 2, 1)).permute(0, 2, 1)
 
             # Series Decomposition  
             seasonality, trend = self.series_decomposition[i](multi_head_node_emb)
@@ -119,7 +136,7 @@ class MSHTrans(nn.Module):
             st_fusion_list.append(st_fusion)
         # Multi-scale Fusion
         fused_logits = self.msfusion(st_fusion_list)
-        return fused_logits
+        return fused_logits, st_fusion_list
 
     def decoder(self, x, fused_logits, hyperedge_index):
         edge_features = {}   
@@ -134,23 +151,31 @@ class MSHTrans(nn.Module):
         node_value = node_value.permute(2, 0, 1).contiguous()
         edge_features = torch.sparse.mm(adj_matrix, node_value.view(num_nodes, -1)).view(num_edges, node_value.size(1), node_value.size(2))
         
-        # input: x: (batch_size, seq_len, n_feats) 形状验证一下
+        # input: x: (B, L, D) 形状验证一下
 
         # Series Decomposition 1
         z_sea_1, z_trend_1 = self.series_decomposition_d1(x) 
 
-        # input/output: z_sea_1、z_trend_1 (batch_size, seq_len, n_feats)
+        # input/output: z_sea_1、z_trend_1 (B, L, D)
 
-        # Multi-head Hypergraph Convolution
-        input_hyconv = torch.concat([z_sea_1, fused_logits], dim=-1)
-        input_hyconv = self.pos_encoder(input_hyconv)
-        output_list = []
-        for i in range(self.hyper_head):
-            output = self.hyconv_d1[i](input_hyconv, hyperedge_index, edge_features).permute(1, 0, 2) 
-            output_list.append(output)
-        multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)
+        # region 【Multi-head Hypergraph Convolution】
+        # input_hyconv = torch.concat([z_sea_1, fused_logits], dim=-1)
+        # input_hyconv = self.pos_encoder(input_hyconv)
+        # output_list = []
+        # for i in range(self.hyper_head):
+        #     output = self.hyconv_d1[i](input_hyconv, hyperedge_index, edge_features).permute(1, 0, 2) 
+        #     output_list.append(output)
+        # multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)
 
-        # output: multi_head_node_emb (batch_size, seq_len, n_feats)
+        # endregion output: multi_head_node_emb (batch_size, seq_len, n_feats)
+
+        # STAR (use pre-created module for full-resolution scale)
+        input_star = torch.concat([z_sea_1, fused_logits], dim=-1)
+        input_star = self.pos_encoder(input_star)
+        # input_star: (B, L, D) -> permute to (B, D, L) for STAR, then back
+        multi_head_node_emb = self.star_decoder(input_star.permute(0, 2, 1)).permute(0, 2, 1)
+        if multi_head_node_emb.size(-1) != self.n_feats:
+            multi_head_node_emb = self.decoder_proj(multi_head_node_emb)
 
         # Series Decomposition 2
         z_sea_2, z_trend_2 = self.series_decomposition_d2(multi_head_node_emb)    
@@ -164,10 +189,10 @@ class MSHTrans(nn.Module):
         
     
     def forward(self, x, hyper_graph_indicies, fused_hypergraph):
-        fused_logits = self.encoder(x, hyper_graph_indicies)
+        fused_logits, st_fusion_list = self.encoder(x, hyper_graph_indicies)
         predict_logits = self.decoder(x, fused_logits, fused_hypergraph)
  
-        return predict_logits
+        return predict_logits, st_fusion_list
     
     def hyperedge_constraint(self, window_ori_x, hyper_graph_indicies, node_embedding_list, edge_embedding_list, edge_retain_list):
 
@@ -238,6 +263,37 @@ class MSHTrans(nn.Module):
         loss = torch.einsum('bii->b', Z_T_LZ)
         loss = torch.mean(loss)
         return loss
+    
+    def con_constraint(self, st_fusion_list, temp=0.07):
+        """
+        跨尺度对比学习损失 (InfoNCE)
+        st_fusion_list: 包含不同尺度特征的列表，每个形状为 (B, L_i, D)
+        """
+        lcon_loss = 0.0
+        batch_size = st_fusion_list[0].size(0)
+        
+        for i in range(len(st_fusion_list) - 1):
+            # 1. 提取相邻尺度的特征 Z(s) 和 Z(s+1)
+            z_s = st_fusion_list[i]
+            z_s_plus = st_fusion_list[i+1]
+            
+            # 2. 全局时间平均池化：将 (B, L, D) 转换为 (B, D)
+            # 因为不同尺度长度 L 不同，通过池化将其对齐到相同维度
+            z_s_pooled = torch.mean(z_s, dim=1) 
+            z_s_plus_pooled = torch.mean(z_s_plus, dim=1)
+            
+            # 3. 特征归一化
+            z_s_norm = F.normalize(z_s_pooled, p=2, dim=1)
+            z_s_plus_norm = F.normalize(z_s_plus_pooled, p=2, dim=1)
+            
+            # 4. 计算相似度矩阵 (B, B)
+            logits = torch.mm(z_s_norm, z_s_plus_norm.t()) / temp
+            
+            # 5. 正样本是对角线元素 (即同一窗口的不同尺度表示)
+            labels = torch.arange(batch_size).to(self.device)
+            lcon_loss += F.cross_entropy(logits, labels)
+            
+        return lcon_loss / (len(st_fusion_list) - 1)
         
     def train(self, args, dataloader):
         mse_func = nn.MSELoss(reduction="none")
@@ -252,7 +308,7 @@ class MSHTrans(nn.Module):
             for d in dataloader:
                 ori_window_data = d[0].to(self.device)
                               
-                z = self(ori_window_data, hyper_graph_indicies, fused_hypergraph)
+                z, st_fusion_list = self(ori_window_data, hyper_graph_indicies, fused_hypergraph)
 
                 
                 tgt = ori_window_data
@@ -260,20 +316,27 @@ class MSHTrans(nn.Module):
                 rec_loss = mse_func(z, tgt)
                 rec_loss = torch.mean(rec_loss)
                 
-                window_ori_x = self.extract_downsample(ori_window_data)
-                node_embedding_list, edge_embedding_list = self.multi_adpive_hypergraph.get_embeddings()
-                loss_hyperedge_all_scale, loss_node_all_scale = self.hyperedge_constraint(window_ori_x, hyper_graph_indicies, node_embedding_list, edge_embedding_list, edge_retain_list)
+                # region 【超图相关损失函数】
+                # window_ori_x = self.extract_downsample(ori_window_data)
+                # node_embedding_list, edge_embedding_list = self.multi_adpive_hypergraph.get_embeddings()
+                # loss_hyperedge_all_scale, loss_node_all_scale = self.hyperedge_constraint(window_ori_x, hyper_graph_indicies, node_embedding_list, edge_embedding_list, edge_retain_list)
                 
-                loss_laplacian = 0.0
+                # loss_laplacian = 0.0
                 
-                for i in range(self.hyper_num):
-                    H = torch.mm(node_embedding_list[i], edge_embedding_list[i].t())
-                    H = F.softmax(F.relu(self.multi_adpive_hypergraph.alpha * H))
-                    loss_laplacian = loss_laplacian + self.Laplacian_constraint(H, window_ori_x[i])
+                # for i in range(self.hyper_num):
+                #     H = torch.mm(node_embedding_list[i], edge_embedding_list[i].t())
+                #     H = F.softmax(F.relu(self.multi_adpive_hypergraph.alpha * H))
+                #     loss_laplacian = loss_laplacian + self.Laplacian_constraint(H, window_ori_x[i])
 
                 
                 
-                loss_sum = rec_loss + loss_hyperedge_all_scale + loss_node_all_scale + loss_laplacian
+                # loss_sum = rec_loss + loss_hyperedge_all_scale + loss_node_all_scale + loss_laplacian
+                # endregion
+
+                # 跨尺度对比学习损失
+                con_loss = self.con_constraint(st_fusion_list)             
+                loss_sum = rec_loss + con_loss
+
                 loss_all_batch += loss_sum
                 self.optimizer.zero_grad()
                 loss_sum.backward()
@@ -298,7 +361,7 @@ class MSHTrans(nn.Module):
             for d in dataloader:
                 ori_window_data =d[0].to(self.device)
                 
-                z = self(ori_window_data, hyper_graph_indicies, fused_hypergraph)
+                z, _ = self(ori_window_data, hyper_graph_indicies, fused_hypergraph)
                 tgt = ori_window_data
                 loss = mse_func(z, tgt) 
                 
