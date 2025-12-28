@@ -174,6 +174,7 @@ class MSHTrans(nn.Module):
         input_star = self.pos_encoder(input_star)
         # input_star: (B, L, D) -> permute to (B, D, L) for STAR, then back
         multi_head_node_emb = self.star_decoder(input_star.permute(0, 2, 1)).permute(0, 2, 1)
+        # multi_head_node_emb = input_star
         if multi_head_node_emb.size(-1) != self.n_feats:
             multi_head_node_emb = self.decoder_proj(multi_head_node_emb)
 
