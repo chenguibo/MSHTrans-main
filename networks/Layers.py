@@ -118,33 +118,91 @@ class SeasonTrendFusion(nn.Module):
         
         return x_trans
     
+# class MSFusion(nn.Module):
+#     def __init__(self, d_model, kernel_size, d_inner, seq_length):
+#         super(MSFusion, self).__init__()
+#         self.scale_num = len(kernel_size) + 1
+#         self.seq_length = seq_length
+#         self.up = Linear(d_model, d_model)
+#         self.norm = nn.LayerNorm(d_model)
+#         self.conv_layers = []
+#         for i in range(len(kernel_size)):
+#             self.conv_layers.append(UpConvLayer(d_inner, kernel_size[i]))
+#         self.conv_layers = nn.ModuleList(self.conv_layers)
+        
+#         self.d_ff = 64
+#         self.feedforward = nn.Sequential(nn.Linear(d_model, self.d_ff, bias=True),
+#                         nn.GELU(),
+#                         nn.Dropout(0.1),
+#                         nn.Linear(self.d_ff, d_model // 2, bias=True))
+
+#     def forward(self, input_list):
+#         up_logit = input_list[-1]
+#         for i in range(len(input_list) - 1, 0, -1):
+#             logit = up_logit
+#             temp_input = self.up(logit).permute(0, 2, 1)
+#             cur_up_logit = self.conv_layers[i - 1](temp_input).permute(0, 2, 1)
+#             padding_num = self.seq_length[i - 1] - cur_up_logit.size(1)
+#             cur_up_logit = F.pad(cur_up_logit, (0, 0, padding_num, 0), 'constant', 0)
+#             up_logit = cur_up_logit + input_list[i - 1]
+            
+#         fused_logits = self.feedforward(up_logit)
+#         return fused_logits
+
 class MSFusion(nn.Module):
     def __init__(self, d_model, kernel_size, d_inner, seq_length):
         super(MSFusion, self).__init__()
         self.scale_num = len(kernel_size) + 1
         self.seq_length = seq_length
-        self.up = Linear(d_model, d_model)
-        self.norm = nn.LayerNorm(d_model)
-        self.conv_layers = []
-        for i in range(len(kernel_size)):
-            self.conv_layers.append(UpConvLayer(d_inner, kernel_size[i]))
-        self.conv_layers = nn.ModuleList(self.conv_layers)
         
-        self.d_ff = 64
-        self.feedforward = nn.Sequential(nn.Linear(d_model, self.d_ff, bias=True),
-                        nn.GELU(),
-                        nn.Dropout(0.1),
-                        nn.Linear(self.d_ff, d_model // 2, bias=True))
+        # 改进1：可学习的融合权重 (BiFPN 思路)
+        self.w = nn.Parameter(torch.ones(self.scale_num, dtype=torch.float32), requires_grad=True)
+        self.epsilon = 1e-4
+        
+        self.up = nn.Linear(d_model, d_model)
+        self.norm = nn.LayerNorm(d_model) # 修正：原代码没用这个
+        
+        self.conv_layers = nn.ModuleList([
+            UpConvLayer(d_inner, k) for k in kernel_size
+        ])
+        
+        # 改进2：增强 FFN (增加宽度并引入残差连接思路)
+        self.d_ff = 128 # 适当增加中间维度
+        self.feedforward = nn.Sequential(
+            nn.Linear(d_model, self.d_ff),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.d_ff, d_model // 2)
+        )
 
     def forward(self, input_list):
+        # 权重归一化 (Softmax 变体，保证稳定性)
+        weight = torch.relu(self.w)
+        weight = weight / (torch.sum(weight, dim=0) + self.epsilon)
+
         up_logit = input_list[-1]
+        
+        # 自底向上融合
         for i in range(len(input_list) - 1, 0, -1):
-            logit = up_logit
-            temp_input = self.up(logit).permute(0, 2, 1)
+            # 这里的 i-1 对应的是 conv_layers 的索引
+            # 改进3：增加线性投影的非线性能力
+            logit = F.gelu(self.up(up_logit)) 
+            temp_input = logit.permute(0, 2, 1)
+            
+            # 卷积升采样
             cur_up_logit = self.conv_layers[i - 1](temp_input).permute(0, 2, 1)
+            
+            # 动态调整对齐（相比于 F.pad，线性插值有时效果更好，但取决于你的 UpConv 实现）
             padding_num = self.seq_length[i - 1] - cur_up_logit.size(1)
-            cur_up_logit = F.pad(cur_up_logit, (0, 0, padding_num, 0), 'constant', 0)
-            up_logit = cur_up_logit + input_list[i - 1]
+            if padding_num > 0:
+                cur_up_logit = F.pad(cur_up_logit, (0, 0, 0, padding_num), 'constant', 0)
+            elif padding_num < 0:
+                cur_up_logit = cur_up_logit[:, :self.seq_length[i-1], :]
+
+            # 加权融合
+            up_logit = weight[i] * cur_up_logit + weight[i-1] * input_list[i-1]
+            # 改进4：加入 Norm 稳定训练
+            up_logit = self.norm(up_logit)
             
         fused_logits = self.feedforward(up_logit)
         return fused_logits
