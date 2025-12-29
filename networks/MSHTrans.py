@@ -9,7 +9,7 @@ from torch.nn import Linear
 from networks.MAHLayer import Multi_Adaptive_Hypergraph
 from networks.Layers import Bottleneck_Construct, SeriesDecomposition, SeasonTrendFusion, MSFusion, PositionalEncoding
 from networks.HyperGraphConv import HypergraphConv
-from networks.STAR import STAR
+from networks.DiffAttn import MultiheadDiffAttn
 
 class MSHTrans(nn.Module):
     def __init__(self, args, device):
@@ -27,6 +27,16 @@ class MSHTrans(nn.Module):
         for i in range(self.hyper_num - 1):
             self.seq_length.append(self.seq_length[-1] // args["pool_size_list"][i])
         self.hyper_head = args["head_num"]
+        # Ensure number of heads divides n_feats (requirement from DiffAttn: n_feats % num_heads == 0)
+        if self.n_feats % self.hyper_head != 0:
+            # find largest divisor of n_feats that is <= requested head number
+            new_head = 1
+            for h in range(self.hyper_head, 0, -1):
+                if self.n_feats % h == 0:
+                    new_head = h
+                    break
+            logging.warning(f"Adjusting head_num from {self.hyper_head} to {new_head} to satisfy n_feats % head_num == 0.")
+            self.hyper_head = new_head
 
         self.multi_adpive_hypergraph = Multi_Adaptive_Hypergraph(args, self.device)
         
@@ -39,15 +49,16 @@ class MSHTrans(nn.Module):
                 self.hyconv.append(HypergraphConv(self.n_feats * 2, self.n_feats * 2))
             self.hyconv_list.append(self.hyconv)
             
-        # STAR modules per scale (predefined and registered)
-        self.star_list = nn.ModuleList()
+        # DiffAttn modules per scale (predefined and registered)
+        self.diffattn_list = nn.ModuleList()
         for i in range(self.hyper_num):
             L_i = self.seq_length[i]
             D_i = self.n_feats * 2
-            self.star_list.append(STAR(d_series=L_i, d_core=D_i))
+            # depth = i+1 (layer index) for lambda init; num_heads = self.hyper_head
+            self.diffattn_list.append(MultiheadDiffAttn(embed_dim=D_i, depth=i+1, num_heads=self.hyper_head))
         
-        # Separate STAR for decoder to avoid sharing encoder parameters
-        self.star_decoder = STAR(d_series=self.seq_length[0], d_core=self.n_feats * 2)
+        # Separate DiffAttn for decoder to avoid sharing encoder parameters
+        self.diffattn_decoder = MultiheadDiffAttn(embed_dim=self.n_feats * 2, depth=0, num_heads=self.hyper_head)
         self.decoder_proj = nn.Linear(self.n_feats * 2, self.n_feats)
         self.decoder_adapter = nn.Linear(self.n_feats, self.n_feats * 2) 
         self.decoder_decomp = SeriesDecomposition(self.window_size, self.n_feats * 2)
@@ -127,9 +138,9 @@ class MSHTrans(nn.Module):
             # output: multi_head_node_emb (batch_size, seq_len_i, n_feats*2)
             # endregion
 
-            # STAR (use pre-created module; STAR expects input shape (B, D, L))
-            # seq_enc[i]: (B, L, D) -> permute to (B, D, L)
-            multi_head_node_emb = self.star_list[i](seq_enc[i].permute(0, 2, 1)).permute(0, 2, 1)
+            # DiffAttn (expects input shape (B, L, C))
+            # seq_enc[i]: (B, L, D) -> pass directly
+            multi_head_node_emb = self.diffattn_list[i](seq_enc[i])
 
             # Series Decomposition  
             seasonality, trend = self.series_decomposition[i](multi_head_node_emb)
@@ -161,7 +172,7 @@ class MSHTrans(nn.Module):
         # STAR 会通过随机池化和聚合重新分配通道权重
         # 它的目的是：根据全局特征，在原始序列中寻找/修复异常部分
         # 输入要求 (B, D_core, L)
-        refined_features = self.star_decoder(combined.permute(0, 2, 1)).permute(0, 2, 1) # (B, L, D*2)
+        refined_features = self.diffattn_decoder(combined) # (B, L, D*2)
 
         # --- 第三阶段：序列精炼 (Decomposition) ---
         # 通过分解，让模型强制学习重构出的信号中，哪些是平滑趋势，哪些是周期季节项
