@@ -49,6 +49,9 @@ class MSHTrans(nn.Module):
         # Separate STAR for decoder to avoid sharing encoder parameters
         self.star_decoder = STAR(d_series=self.seq_length[0], d_core=self.n_feats * 2)
         self.decoder_proj = nn.Linear(self.n_feats * 2, self.n_feats)
+        self.decoder_adapter = nn.Linear(self.n_feats, self.n_feats * 2) 
+        self.decoder_decomp = SeriesDecomposition(self.window_size, self.n_feats * 2)
+        self.decoder_fusion = SeasonTrendFusion(self.n_feats * 2, self.n_feats) # 最后输出回到 n_feats (维度 D)
 
         self.series_decomposition = nn.ModuleList()
         self.season_trend_fusion = nn.ModuleList()
@@ -138,60 +141,44 @@ class MSHTrans(nn.Module):
         fused_logits = self.msfusion(st_fusion_list)
         return fused_logits, st_fusion_list
 
-    def decoder(self, x, fused_logits, hyperedge_index):
-        edge_features = {}   
-        node_value = x.permute(0,2,1)
-        hyperedge_index = hyperedge_index.to(self.device)
-        edge_indices, node_indices = hyperedge_index[1], hyperedge_index[0]
-        num_edges = edge_indices.max().item() + 1
-        num_nodes = node_value.size(2) 
-        indices = torch.stack([edge_indices, node_indices])  
-        values = torch.ones(edge_indices.size(0), device=node_value.device)
-        adj_matrix = torch.sparse_coo_tensor(indices, values, (num_edges, num_nodes), device=node_value.device)
-        node_value = node_value.permute(2, 0, 1).contiguous()
-        edge_features = torch.sparse.mm(adj_matrix, node_value.view(num_nodes, -1)).view(num_edges, node_value.size(1), node_value.size(2))
+    def decoder(self, x, fused_logits):
+        # """
+        # x: 原始输入 (B, L, D)
+        # fused_logits: 编码器多尺度融合后的特征 (B, L, D/2) -> 根据你的MSFusion
+        # """
         
-        # input: x: (B, L, D) 形状验证一下
+        # --- 第一阶段：特征注入与对齐 ---
+        # 将编码器特征升维/对齐，使其能与原始输入在特征维度融合
+        # 如果 MSFusion 输出维度已经是 D*2 或 D，这一步可灵活调整
+        enc_info = self.decoder_adapter(fused_logits) # (B, L, D*2)
+        
+        # 将原始 x 扩充到 D*2（或者用 concat，让模型对比原始值与抽象特征）
+        # 简单的做法是将原始 x 投影或重复，与 enc_info 相加实现残差结构
+        x_emb = torch.cat([x, x], dim=-1) # (B, L, D*2)
+        combined = x_emb + enc_info # 融合了原始信息和全局特征
 
-        # Series Decomposition 1
-        z_sea_1, z_trend_1 = self.series_decomposition_d1(x) 
+        # --- 第二阶段：核心重构 (STAR) ---
+        # STAR 会通过随机池化和聚合重新分配通道权重
+        # 它的目的是：根据全局特征，在原始序列中寻找/修复异常部分
+        # 输入要求 (B, D_core, L)
+        refined_features = self.star_decoder(combined.permute(0, 2, 1)).permute(0, 2, 1) # (B, L, D*2)
 
-        # input/output: z_sea_1、z_trend_1 (B, L, D)
+        # --- 第三阶段：序列精炼 (Decomposition) ---
+        # 通过分解，让模型强制学习重构出的信号中，哪些是平滑趋势，哪些是周期季节项
+        # 这一步能有效过滤掉随机噪声导致的误报
+        z_sea, z_trend = self.decoder_decomp(refined_features)
 
-        # region 【Multi-head Hypergraph Convolution】
-        # input_hyconv = torch.concat([z_sea_1, fused_logits], dim=-1)
-        # input_hyconv = self.pos_encoder(input_hyconv)
-        # output_list = []
-        # for i in range(self.hyper_head):
-        #     output = self.hyconv_d1[i](input_hyconv, hyperedge_index, edge_features).permute(1, 0, 2) 
-        #     output_list.append(output)
-        # multi_head_node_emb = torch.mean(torch.stack(output_list, dim = -1), dim = -1)
-
-        # endregion output: multi_head_node_emb (batch_size, seq_len, n_feats)
-
-        # STAR (use pre-created module for full-resolution scale)
-        input_star = torch.concat([z_sea_1, fused_logits], dim=-1)
-        input_star = self.pos_encoder(input_star)
-        # input_star: (B, L, D) -> permute to (B, D, L) for STAR, then back
-        multi_head_node_emb = self.star_decoder(input_star.permute(0, 2, 1)).permute(0, 2, 1)
-        # multi_head_node_emb = input_star
-        if multi_head_node_emb.size(-1) != self.n_feats:
-            multi_head_node_emb = self.decoder_proj(multi_head_node_emb)
-
-        # Series Decomposition 2
-        z_sea_2, z_trend_2 = self.series_decomposition_d2(multi_head_node_emb)    
-        z_trend_3 = z_trend_1 + z_trend_2
-
-        # Seasonality and Trend Fusion
-        results = self.season_trend_fusion_d1(x, z_sea_2, z_trend_3)    
-        results = self.sigmoid(results)
-  
-        return results
+        # --- 第四阶段：加权输出 (Fusion) ---
+        # 通过 SeasonTrendFusion 中的三个可学习参数 (x_weight, sea_weight, trend_weight)
+        # 动态调整这三个部分对重构序列的贡献
+        results = self.decoder_fusion(refined_features, z_sea, z_trend) # (B, L, D)
+        
+        return self.sigmoid(results)
         
     
     def forward(self, x, hyper_graph_indicies, fused_hypergraph):
         fused_logits, st_fusion_list = self.encoder(x, hyper_graph_indicies)
-        predict_logits = self.decoder(x, fused_logits, fused_hypergraph)
+        predict_logits = self.decoder(x, fused_logits)
  
         return predict_logits, st_fusion_list
     
