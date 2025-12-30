@@ -152,39 +152,21 @@ class MSHTrans(nn.Module):
         fused_logits = self.msfusion(st_fusion_list)
         return fused_logits, st_fusion_list
 
-    def decoder(self, x, fused_logits):
-        # """
-        # x: 原始输入 (B, L, D)
-        # fused_logits: 编码器多尺度融合后的特征 (B, L, D/2) -> 根据你的MSFusion
-        # """
-        
-        # --- 第一阶段：特征注入与对齐 ---
-        # 将编码器特征升维/对齐，使其能与原始输入在特征维度融合
-        # 如果 MSFusion 输出维度已经是 D*2 或 D，这一步可灵活调整
-        enc_info = self.decoder_adapter(fused_logits) # (B, L, D*2)
-        
-        # 将原始 x 扩充到 D*2（或者用 concat，让模型对比原始值与抽象特征）
-        # 简单的做法是将原始 x 投影或重复，与 enc_info 相加实现残差结构
-        x_emb = torch.cat([x, x], dim=-1) # (B, L, D*2)
-        combined = x_emb + enc_info # 融合了原始信息和全局特征
+    def decoder(self, x, fused_logits):  
+        z_sea_1, z_trend_1 = self.series_decomposition_d1(x) 
 
-        # --- 第二阶段：核心重构 (STAR) ---
-        # STAR 会通过随机池化和聚合重新分配通道权重
-        # 它的目的是：根据全局特征，在原始序列中寻找/修复异常部分
-        # 输入要求 (B, D_core, L)
-        refined_features = self.diffattn_decoder(combined) # (B, L, D*2)
+        input = torch.concat([z_sea_1, fused_logits], dim=-1)
+        input = self.pos_encoder(input)
+        multi_head_node_emb = self.diffattn_decoder(input)
+        multi_head_node_emb = self.decoder_proj(multi_head_node_emb)
 
-        # --- 第三阶段：序列精炼 (Decomposition) ---
-        # 通过分解，让模型强制学习重构出的信号中，哪些是平滑趋势，哪些是周期季节项
-        # 这一步能有效过滤掉随机噪声导致的误报
-        z_sea, z_trend = self.decoder_decomp(refined_features)
+        z_sea_2, z_trend_2 = self.series_decomposition_d2(multi_head_node_emb)    
+        z_trend_3 = z_trend_1 + z_trend_2
 
-        # --- 第四阶段：加权输出 (Fusion) ---
-        # 通过 SeasonTrendFusion 中的三个可学习参数 (x_weight, sea_weight, trend_weight)
-        # 动态调整这三个部分对重构序列的贡献
-        results = self.decoder_fusion(refined_features, z_sea, z_trend) # (B, L, D)
-        
-        return self.sigmoid(results)
+        results = self.season_trend_fusion_d1(x, z_sea_2, z_trend_3)    
+        results = self.sigmoid(results)
+  
+        return results
         
     
     def forward(self, x, hyper_graph_indicies, fused_hypergraph):
