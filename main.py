@@ -26,7 +26,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-id", type=str, default="MSHTran")
     parser.add_argument("--normalize", type=str, default="minmax")
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--seed", type=int, default=2021)
+    parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--csv-postfix", type=str, default="common")
     parser.add_argument("--result-dir", type=str, default="./experimental_results", help="experimental results dir")

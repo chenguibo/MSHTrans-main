@@ -6,7 +6,7 @@ import logging
 
 from torch.nn import Linear
 from networks.Layers import Bottleneck_Construct, SeriesDecomposition, SeasonTrendFusion, MSFusion, PositionalEncoding
-from networks.DiffAttn import MultiheadDiffAttn
+from networks.WITRAN import WITRAN_2DPSGMU_Encoder
 
 class MSHTrans(nn.Module):
     def __init__(self, args, device):
@@ -22,29 +22,36 @@ class MSHTrans(nn.Module):
         self.kernel_size  = args["pool_size_list"]
         self.conv_layers = Bottleneck_Construct(self.n_feats, args["pool_size_list"], self.n_feats)
         self.seq_length = [self.max_seq_length]
+        self.num_layers = 1
+        self.add_list = [20,15,10]
+        self.window_size_list = [100,50,25]
+        self.w_list = [10,5,5]
+        self.h_list = [10,10,5]
         for i in range(self.scale_num - 1):
             self.seq_length.append(self.seq_length[-1] // args["pool_size_list"][i])
 
         self.pos_encoder = PositionalEncoding(self.n_feats * 2, 0.1, self.window_size)
             
-        self.diffattn_list = nn.ModuleList()
+        self.getfeature_list = nn.ModuleList()
+        self.fc_list = nn.ModuleList()
         for i in range(self.scale_num):
-            self.diffattn_list.append(MultiheadDiffAttn(embed_dim=self.n_feats * 2, depth=1, num_heads=self.num_heads))
+            self.getfeature_list.append(WITRAN_2DPSGMU_Encoder(input_size=self.n_feats * 2, hidden_size=self.n_feats * 2, num_layers=self.num_layers, dropout=0., water_rows=self.w_list[i], water_cols=self.h_list[i]))
+            self.fc_list.append(nn.Linear(self.num_layers * self.add_list[i] * self.n_feats * 2, self.window_size_list[i] * self.n_feats * 2))
         
-        self.diffattn_d1 = MultiheadDiffAttn(embed_dim=self.n_feats * 2, depth=1, num_heads=self.num_heads)
-        self.diffattn_proj = nn.Linear(self.n_feats * 2, self.n_feats)
+        self.getfeature_d1 = WITRAN_2DPSGMU_Encoder(input_size=self.n_feats * 2, hidden_size=self.n_feats * 2, num_layers=self.num_layers, dropout=0., water_rows=10, water_cols=10)
+        self.getfeature_proj_d1 = nn.Linear(self.n_feats * 2, self.n_feats)
+        self.fc_d1 = nn.Linear(self.num_layers * 20 * self.n_feats * 2, self.window_size * self.n_feats * 2)
 
         self.series_decomposition = nn.ModuleList()
         self.season_trend_fusion = nn.ModuleList()
         for i in range(self.scale_num):
-            seq_len = self.seq_length[i]
-            self.series_decomposition.append(SeriesDecomposition(seq_len, self.n_feats * 2))
+            self.series_decomposition.append(SeriesDecomposition(self.n_feats * 2))
             self.season_trend_fusion.append(SeasonTrendFusion(self.n_feats * 2, self.n_feats * 2))
             
         self.msfusion = MSFusion(self.n_feats * 2, args["pool_size_list"], self.n_feats * 2, self.seq_length)
         
-        self.series_decomposition_d1 = SeriesDecomposition(self.max_seq_length, self.n_feats)
-        self.series_decomposition_d2 = SeriesDecomposition(self.max_seq_length, args["n_feats"])
+        self.series_decomposition_d1 = SeriesDecomposition(self.n_feats)
+        self.series_decomposition_d2 = SeriesDecomposition(args["n_feats"])
         self.season_trend_fusion_d1 = SeasonTrendFusion(self.n_feats, self.n_feats)
         self.sigmoid = nn.Sigmoid()
         
@@ -63,29 +70,45 @@ class MSHTrans(nn.Module):
             window_x_list.append(sequence)
 
         return window_x_list
+    
+    def extract_feature(self, x, isEncoder=True, i=0):
+        B,_,D = x.size()
+
+        if isEncoder:
+            x = x.reshape(B,self.w_list[i],self.h_list[i],D)
+            _, enc_hid_row, enc_hid_col = self.getfeature_list[i](x, batch_size=B, input_size=D, flag=0)         
+        else:
+            x = x.reshape(B,self.w_list[0],self.h_list[0],D)
+            _, enc_hid_row, enc_hid_col = self.getfeature_d1(x, batch_size=B, input_size=D, flag=0)          
+
+        _,W,H,_ = x.size()
+
+        hidden_all = torch.cat([enc_hid_row, enc_hid_col], dim=2)
+        hidden_all = hidden_all.reshape(hidden_all.shape[0], -1)
+
+        last_output = hidden_all
+        if isEncoder:
+            last_output = self.fc_list[i](hidden_all)
+        else:
+            last_output = self.fc_d1(hidden_all)
+
+        last_output = last_output.reshape(last_output.shape[0], H*W, -1)
+
+        return last_output
         
     def encoder(self, x):
-        # x: (B, L, D)
-        # Multi-scale Window Generator
         window_ori_x = self.extract_downsample(x)    
         seq_enc = self.conv_layers(x) 
         for i in range(self.scale_num):
             seq_enc[i] = torch.concat([seq_enc[i], window_ori_x[i]], dim=-1)
             seq_enc[i] = self.pos_encoder(seq_enc[i])
-        #  seq_enc[i]: (B, L_i, D*2)
 
         st_fusion_list = []
         for i in range(self.scale_num):      
-            # DiffAttn
-            multi_head_node_emb = self.diffattn_list[i](seq_enc[i])
-
-            # Series Decomposition  
+            multi_head_node_emb = self.extract_feature(seq_enc[i], True, i)
             seasonality, trend = self.series_decomposition[i](multi_head_node_emb)
-            
-            # Seasonality and Trend Fusion
             st_fusion = self.season_trend_fusion[i](seq_enc[i], seasonality, trend) 
             st_fusion_list.append(st_fusion)
-        # Multi-scale Fusion
         fused_logits = self.msfusion(st_fusion_list)
         return fused_logits, st_fusion_list
 
@@ -94,8 +117,8 @@ class MSHTrans(nn.Module):
 
         input = torch.concat([z_sea_1, fused_logits], dim=-1)
         input = self.pos_encoder(input)
-        multi_head_node_emb = self.diffattn_d1(input)
-        multi_head_node_emb = self.diffattn_proj(multi_head_node_emb)
+        multi_head_node_emb = self.extract_feature(input, False)
+        multi_head_node_emb = self.getfeature_proj_d1(multi_head_node_emb)
 
         z_sea_2, z_trend_2 = self.series_decomposition_d2(multi_head_node_emb)    
         z_trend_3 = z_trend_1 + z_trend_2
