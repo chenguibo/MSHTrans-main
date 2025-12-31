@@ -68,14 +68,7 @@ class MultiheadDiffAttn(nn.Module):
         self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
         self.n_rep = self.num_heads // self.num_kv_heads
 
-        # enforce divisibility: embed_dim must be divisible by (2 * num_heads)
-        if embed_dim % (2 * self.num_heads) != 0:
-            raise ValueError(
-                f"embed_dim ({embed_dim}) must be divisible by 2 * num_heads ({2 * self.num_heads}). "
-                "Please adjust model width or number of heads so that this holds (e.g., make n_feats*2 divisible by 2*head_num)."
-            )
-
-        self.head_dim = embed_dim // (2 * num_heads)
+        self.head_dim = embed_dim // num_heads // 2
         self.scaling = self.head_dim ** -0.5
 
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)

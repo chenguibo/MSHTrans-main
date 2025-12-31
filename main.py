@@ -26,7 +26,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-id", type=str, default="MSHTran")
     parser.add_argument("--normalize", type=str, default="minmax")
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--seed", type=int, default=2025)
+    parser.add_argument("--seed", type=int, default=2021)
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--csv-postfix", type=str, default="common")
     parser.add_argument("--result-dir", type=str, default="./experimental_results", help="experimental results dir")
@@ -81,14 +81,16 @@ if __name__ == "__main__":
 
     if args["dataset_id"] == "SWaT":
         args["n_feats"] = 51
+        args["head_num"] = 17 # 51 17 3
     elif args["dataset_id"] == "MSL":
         args["n_feats"] = 55
-    elif args["dataset_id"] == "WADI":
-        args["n_feats"] = 123
+        args["head_num"] = 5 # 11 5
     elif args["dataset_id"] == "SMAP":
         args["n_feats"] = 25
+        args["head_num"] = 5 # 25 5
     elif args["dataset_id"] == "SMD":
         args["n_feats"] = 38
+        args["head_num"] = 19 # 38 19
 
 
     data_dict, entity_list  = load_pkl(args["dataset_id"], args["data_root"])
@@ -167,7 +169,6 @@ if __name__ == "__main__":
         
         checkpoint = {
             'model_state_dict': model.state_dict(),
-            'adjs': model.multi_adpive_hypergraph.adjs
         }
         torch.save(checkpoint, os.path.join(model_save_path, "model.pth"))
         logging.info(f"Saving model for {entity} done at {model_save_path}.")
