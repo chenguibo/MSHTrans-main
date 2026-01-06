@@ -81,16 +81,12 @@ if __name__ == "__main__":
 
     if args["dataset_id"] == "SWaT":
         args["n_feats"] = 51
-        args["head_num"] = 17 # 51 17 3
     elif args["dataset_id"] == "MSL":
         args["n_feats"] = 55
-        args["head_num"] = 5 # 11 5
     elif args["dataset_id"] == "SMAP":
         args["n_feats"] = 25
-        args["head_num"] = 5 # 25 5
     elif args["dataset_id"] == "SMD":
         args["n_feats"] = 38
-        args["head_num"] = 19 # 38 19
 
 
     data_dict, entity_list  = load_pkl(args["dataset_id"], args["data_root"])

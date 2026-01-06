@@ -12,7 +12,6 @@ class MSHTrans(nn.Module):
     def __init__(self, args, device):
         super(MSHTrans, self).__init__()
         self.n_feats = args["n_feats"]
-        self.num_heads = args["head_num"]
         self.window_size = args["window_size"]
         self.max_seq_length = self.window_size
         self.scale_num = args["scale_num"] 
@@ -27,6 +26,7 @@ class MSHTrans(nn.Module):
         self.window_size_list = [100,50,25]
         self.w_list = [10,5,5]
         self.h_list = [10,10,5]
+        self.flag_list = [1,1,1]
         for i in range(self.scale_num - 1):
             self.seq_length.append(self.seq_length[-1] // args["pool_size_list"][i])
 
@@ -40,7 +40,7 @@ class MSHTrans(nn.Module):
         
         self.getfeature_d1 = WITRAN_2DPSGMU_Encoder(input_size=self.n_feats * 2, hidden_size=self.n_feats * 2, num_layers=self.num_layers, dropout=0., water_rows=10, water_cols=10)
         self.getfeature_proj_d1 = nn.Linear(self.n_feats * 2, self.n_feats)
-        self.fc_d1 = nn.Linear(self.num_layers * 20 * self.n_feats * 2, self.window_size * self.n_feats * 2)
+        self.fc_d1 = nn.Linear(self.num_layers * self.add_list[0] * self.n_feats * 2, self.window_size * self.n_feats * 2)
 
         self.series_decomposition = nn.ModuleList()
         self.season_trend_fusion = nn.ModuleList()
@@ -76,10 +76,10 @@ class MSHTrans(nn.Module):
 
         if isEncoder:
             x = x.reshape(B,self.w_list[i],self.h_list[i],D)
-            _, enc_hid_row, enc_hid_col = self.getfeature_list[i](x, batch_size=B, input_size=D, flag=0)         
+            _, enc_hid_row, enc_hid_col = self.getfeature_list[i](x, batch_size=B, input_size=D, flag=self.flag_list[i])         
         else:
             x = x.reshape(B,self.w_list[0],self.h_list[0],D)
-            _, enc_hid_row, enc_hid_col = self.getfeature_d1(x, batch_size=B, input_size=D, flag=0)          
+            _, enc_hid_row, enc_hid_col = self.getfeature_d1(x, batch_size=B, input_size=D, flag=self.flag_list[0])          
 
         _,W,H,_ = x.size()
 
